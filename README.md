@@ -1,5 +1,6 @@
 # Algorithms for genomic data analysis (Assignment 1)
 *Winter semester 2023/2024*
+**Simple sequence aligner written in pure Python**
 
 ## Task defition
 
@@ -72,22 +73,28 @@ You can pass additional parameters to the aligner. Please use `--help` parameter
 
 The help can look like this:
 
-TODO: Image
+![CLI usage screenshot](https://github.com/styczynski/aadg-genomics-class/blob/main/static/screen0.png?raw=true)
 
-## Aligner details 
+### Alignment algorithms introduction
 
 Sequence alignment is a transformative process that elucidates the steps required to derive one sequence from another. In the realm of bioinformatics, its primary application lies in identifying analogous segments within DNA chains, RNA chains, or proteins to unveil evolutionary and functional associations. The approach commonly employed for such alignments is dynamic programming, a methodology that resolves intricate problems by dissecting them into smaller, recursive subproblems. The outcomes of these subproblems are stored and utilized to reconstruct the ultimate solution.
 
 Various versions of pairwise alignment algorithms exist, such as the Needleman-Wunsch algorithm for global alignment, the Smith-Waterman algorithm for local alignment, and semi-global algorithms tailored for suffix-prefix and prefix-suffix alignments. Distinctions among them primarily lie in the initialization step and the starting point for the backtrack procedure.
 
-Given the quadratic time complexity of alignment algorithms, the expedited detection of similar regions between sequences often employs k-mer indexing. However, the comprehensive collection of all k-mers can strain computational resources, particularly when targeting frequently occurring k-mers in the sequence set. Focusing on a subset of k-mers can mitigate these challenges while maintaining a reasonable level of sensitivity. One such approach involves leveraging lexicographically smallest k-mers known as minimizers, [as detailed here](https://academic.oup.com/bioinformatics/article/20/18/3363/202143).
+Given the quadratic time complexity of alignment algorithms, the expedited detection of similar regions between sequences often employs k-mer indexing. However, the comprehensive collection of all k-mers can strain computational resources, particularly when targeting frequently occurring k-mers in the sequence set. Focusing on a subset of k-mers can mitigate these challenges while maintaining a reasonable level of sensitivity.
 
-The current implemenation works (on the highest-level) somewhere like this:
+One such approach involves leveraging lexicographically smallest k-mers known as minimizers, [as detailed here](https://academic.oup.com/bioinformatics/article/20/18/3363/202143).
+
+### High-level algorithm of the aligner
+
+**The current implemenation works (on the highest-level) somewhere like this:**
 
 1. Load all target and query sequences and covert them to numpy arrays
 2. I build a minimizer index from the target sequence, which will store all positions and origins for each distinct minimizer found in the reference
 3. Ignore too frequent minimizers should (controlled by parameter) in that target index
-4. For each query build a minimizer index for that sequence
-5. All minimizers of a query are to be searched against the reference index to find matches. From the list of all matches for a pair of (query, reference), the longest linear chain should represent the best candidate for a good alignment between the pair. That region can be obtained in quasilinear time by solving the longest increasing subsequence problem on the list of minimizer matches.
-6. I invoke aligner (Needleman-Wunsch) only on the found regions
-7. I print matched regions with correct position paddings
+4. For each query
+    1. Build a minimizer index for that sequence
+    2. All minimizers of a query are to be searched against the reference index to find matches. From the list of all matches for a pair of (query, reference), the longest linear chain should represent the best candidate for a good alignment between the pair. That region can be obtained in quasilinear time by solving the longest increasing subsequence problem on the list of minimizer matches.
+    3. I invoke aligner (Needleman-Wunsch) only on the found regions
+    4. I print matched regions with correct position paddings
+5. Print summary reports
