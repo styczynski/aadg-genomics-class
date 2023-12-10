@@ -120,3 +120,7 @@ One such approach involves leveraging lexicographically smallest k-mers known as
     3. I invoke aligner (Needleman-Wunsch) only on the found regions
     4. I print matched regions with correct position paddings
 5. Print summary reports
+
+### Other resources
+
+Please see [uploaded assignment presentation draft here](https://github.com/styczynski/aadg-genomics-class/blob/main/static/AADG_Assignment_1.pdf)
