@@ -71,9 +71,31 @@ You can pass additional parameters to the aligner. Please use `--help` parameter
     $ poetry run aadg_genomics_class/cli.py --help
 ```
 
-The help can look like this:
+This is how the help looks like:
+```
+Usage: cli.py <target_fasta> <query_fasta> [<output>] [OPTIONS]
+
+Arguments:
+  target-fasta: <target_fasta>  Target sequence FASTA file path  [required]
+  query-fasta: <query_fasta>    Query sequences FASTA file path  [required]
+  output: [<output>]            Output file path  [default: output.txt]
+
+[OPTIONS]:
+  --kmer-len INTEGER        [default: 15]
+  --window-len INTEGER      [default: 5]
+  --f FLOAT                 Portion of top frequent kmers to be removed from
+                            the index (must be in range 0 to 1 inclusive)
+                            [default: 0.001]
+  --score-match INTEGER     [default: 1]
+  --score-mismatch INTEGER  [default: 1]
+  --score-gap INTEGER       [default: 1]
+  -h, --help                Show this message and exit.
+```
+
+The full program usage can look like this:
 
 ![CLI usage screenshot](https://github.com/styczynski/aadg-genomics-class/blob/main/static/screen0.png?raw=true)
+
 
 ### Alignment algorithms introduction
 
