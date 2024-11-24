@@ -13,7 +13,7 @@
 \usepackage{caption}
 \usepackage[dvipsnames]{xcolor}
 \pgfmathsetseed{\number\pdfrandomseed}
-\usetikzlibrary{tikzmark, positioning, decorations.pathreplacing, calc, arrows.meta, shapes.geometric, backgrounds, arrows}
+\usetikzlibrary{positioning, decorations.pathreplacing, calc, arrows.meta, shapes.geometric, backgrounds, arrows}
 \robExtConfigure{enable fallback to manual mode} % prints command to run in PDF if shell-escape is not used/forgotten
 \def\mathdefault#1{#1} % Needed in matplotlib 3.8: https://github.com/matplotlib/matplotlib/issues/27907
 \setbeamertemplate{frametitle}[default][center]
@@ -66,13 +66,6 @@ depth .25\baselineskip height #1\baselineskip\relax}
 %% END FIXES
 %% COLOURS FOR ALGORITHMS
 
-
-\makeatletter
-\newcommand{\algcolor}[2]{%
-  \hskip-\ALG@thistlm\colorbox{#1}{\parbox{\dimexpr\linewidth-2\fboxsep}{\hskip\ALG@thistlm\relax #2}}%
-}
-\newcommand{\algemph}[1]{\algcolor{GreenYellow}{#1}}
-\makeatother
 
 % END COLOURS
 
@@ -183,7 +176,7 @@ depth .25\baselineskip height #1\baselineskip\relax}
               \While{$start \leq end$} \Comment{Binary search-like}
                   \State $middle \gets \floor*{\frac{start + end}{2}}$
                   \If{$matches_{T}[sub[middle]] > matches_{T}[i] - max\_diff$} \Comment{Encountered old entry}
-                      \State \algemph{$end \gets start - 1$} \Comment{Breaks loop}
+                      \State{$end \gets start - 1$} \Comment{Breaks loop}
                   \ElsIf{$matches_{Q}[sub[middle]] < matches_{Q}[i]$}
                       \State{$start \gets middle + 1$}
                   \Else
