@@ -124,3 +124,6 @@ One such approach involves leveraging lexicographically smallest k-mers known as
 ### Other resources
 
 Please see [uploaded assignment presentation draft here](https://github.com/styczynski/aadg-genomics-class/blob/main/static/AADG_Assignment_1.pdf)
+
+
+pdflatex source.tex --shell-escape --enable-pipes --enable-write18
