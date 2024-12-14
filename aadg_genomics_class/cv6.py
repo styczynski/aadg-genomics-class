@@ -16,6 +16,7 @@ from numpy.lib.stride_tricks import sliding_window_view
 from operator import itemgetter
 from collections import defaultdict
 
+import math
 import numpy as np
 import mmh3
 
@@ -125,7 +126,8 @@ def load_data_class(class_name, datasets_paths, is_test):
                 seq_buffer += "N" * (DATASET_READ_MAX_SIZE - len(read) + KMER_LEN)
                 loaded_reads += 1
             elif loaded_reads > DATASET_CHUNK_SIZE*test_mul or len(line) == 1:
-                print(f"class={class_name}: Load dataset chunk {fasta_file_gz}")
+                if not is_test:
+                    print(f"class={class_name}: Load dataset chunk {fasta_file_gz}")
                 #seq_buffer_b = b''.join((mmh3.mmh3_x64_128_digest(seq_buffer[i:i+DATASET_READ_MAX_SIZE]) for i in range(0, len(seq_buffer), DATASET_READ_MAX_SIZE)))
                 #seq_arr = np.frombuffer(seq_buffer_b, dtype=np.uint32)
 
@@ -160,11 +162,12 @@ def load_data_class(class_name, datasets_paths, is_test):
     moment_end = time_ns()
 
     #print(f"Train: Total sig length for cls={class_name} is {sum((len(s) for s in sig))}")
-    print(f"Train: Total sig length for cls={class_name} is {len(sig1)+len(sig2)}")
+    if not is_test:
+        print(f"Train: Total sig length for cls={class_name} is {len(sig1)+len(sig2)}")
     speed_1m_sec = (((moment_end-moment_start) * (1000000 / total_reads)) // 10000000) / 100
     return (speed_1m_sec, sig)
 
-def measure_class_distance(test_sig, classes, training_classes):
+def measure_class_distance(truth_class, test_path, test_sig, classes, training_classes):
     scores = []
     for cls in classes:
         doc1 = training_classes[cls]
@@ -188,16 +191,19 @@ def measure_class_distance(test_sig, classes, training_classes):
             points_all = 0
             for kmer in doc1[ii]:
                 if kmer in doc2[ii]:
-                    points += 1 # min(doc1[ii][kmer], doc2[ii][kmer])
-                    points_all += 1 # max(doc1[ii][kmer], doc2[ii][kmer])
+                    points += 1 + math.log(min(doc1[ii][kmer], doc2[ii][kmer]))
+                    points_all += 1 + math.log(max(doc1[ii][kmer], doc2[ii][kmer]))
                 else:
-                    points_all += 1 # doc1[ii][kmer]
+                    points_all += 1 + math.log(doc1[ii][kmer])
             for kmer in doc2[ii]:
                 if kmer not in doc1[ii]:
-                    points_all += 1 #doc2[ii][kmer]
+                    points_all += 1 + math.log(doc2[ii][kmer])
             similarity_score += points / points_all
         scores.append(similarity_score)
 
+
+    top_classes = [cls for (_, cls) in sorted([(scores[i], classes[i]) for i in range(len(classes))], reverse=True)]
+    print(f"--> Classified {test_path} of {truth_class} as {top_classes}")
     return scores
 
 def load_data_class_mp(class_name, datasets_paths, is_test):
@@ -217,6 +223,13 @@ def run_classifier_pipeline(
     # Used to calculate the running time
     moment_start = time_ns()
     l_1m_speeds = []
+
+    gt_cls = dict()
+    with open(ground_truth_file) as gt_file:
+        k = (line.split('\t') for line in gt_file)
+        next(k)
+        for tokens in k:
+            gt_cls[tokens[0]] = tokens[1]    
 
     #  training_datasets: class -> Array<dataset.path>
     training_datasets = defaultdict(lambda: [])
@@ -247,7 +260,8 @@ def run_classifier_pipeline(
             for testing_dataset_path in k:
                 #p_args.append((testing_file_path, [testing_dataset_path],))
                 (speed_1m, test_sig) = load_data_class("unknown_test", [testing_dataset_path], True)
-                output_line = testing_dataset_path + "\t" + "\t".join([str(dist) for dist in measure_class_distance(test_sig, classes, training_classes)]) + "\n"
+                output_line = testing_dataset_path + "\t" + "\t".join([str(dist) for dist in measure_class_distance(gt_cls[testing_dataset_path], testing_dataset_path, test_sig, classes, training_classes)]) + "\n"
+                print(output_line)
                 output_buf.append(output_line)
                 l_1m_speeds.append(speed_1m)
     # results = [pool.apply(load_data_class_mp, args=args) for args in p_args]
