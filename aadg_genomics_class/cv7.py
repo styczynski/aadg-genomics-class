@@ -106,14 +106,24 @@ def load_data_class(class_name, datasets_paths, is_test):
     
     moment_start = time_ns()
     test_mul = 10 if is_test else 1
-    SIG_LEN = 50000 * (2 if is_test else 1)
+    reads_per_chunk = DATASET_CHUNK_SIZE * test_mul
+    total_est_chunks = round(1000000/reads_per_chunk * 3)
+
+    MAX_SIG_LEN_PER_CLASS = 800000
+    MAX_KMER_VALUE = 10000
+    sig_per_step = round(MAX_SIG_LEN_PER_CLASS / total_est_chunks * 2.5)
+
+    #SIG_LEN = 50000 * (2 if is_test else 1)
     seq_buffer = ""
     loaded_reads = 0
     total_reads = 0
-    sig1 = dict()
-    sig2 = dict()
+    sig1 = []
+    sig2 = []
     
     for fasta_file_gz in datasets_paths:
+        part_sig1 = []
+        part_sig2 = []
+
         for line in chain(gzip.open(fasta_file_gz, 'rt'), [">"]):
             if line[0] != '>':
                 read = line.rstrip()
@@ -125,7 +135,7 @@ def load_data_class(class_name, datasets_paths, is_test):
                         exit(1)
                 seq_buffer += "N" * (DATASET_READ_MAX_SIZE - len(read) + KMER_LEN)
                 loaded_reads += 1
-            elif loaded_reads > DATASET_CHUNK_SIZE*test_mul or len(line) == 1:
+            elif loaded_reads > reads_per_chunk or len(line) == 1:
                 if not is_test:
                     print(f"class={class_name}: Load dataset chunk {fasta_file_gz}")
                 #seq_buffer_b = b''.join((mmh3.mmh3_x64_128_digest(seq_buffer[i:i+DATASET_READ_MAX_SIZE]) for i in range(0, len(seq_buffer), DATASET_READ_MAX_SIZE)))
@@ -146,19 +156,26 @@ def load_data_class(class_name, datasets_paths, is_test):
                 kmers = kmers[KMER_LEN-2:]
                 # kmers = sort(kmers)
 
-                kappa = np.column_stack(np.unique(kmers, return_counts=True))      
-                kappa = kappa[kappa[:,0].argsort()]      
+                kappa = kmers[kmers < MAX_KMER_VALUE]
+                kappa = np.column_stack(np.unique(kappa, return_counts=True))   
+                if is_test:
+                    kappa[:,1] *= -1   
+                kappa = kappa[kappa[:,0].argsort()]    
+
+                part_sig1 += kappa[:sig_per_step].tolist()
+                part_sig2 += kappa[-sig_per_step:].tolist()
           
-                for (kmer, occ_count) in kappa[:SIG_LEN].tolist():
-                    sig1[kmer] = sig1.get(kmer, 0) + occ_count
-                for (kmer, occ_count) in kappa[-SIG_LEN:].tolist():
-                    sig2[kmer] = sig2.get(kmer, 0) + occ_count 
+                del kappa
+                del kmers
+                del seq_arr
 
                 # Clear buffer
                 seq_buffer = ""
                 loaded_reads = 0
                 del seq_arr
-
+        
+        sig1 = sorted(sig1+part_sig1)[:MAX_SIG_LEN_PER_CLASS]
+        sig2 = sorted(sig2+part_sig2)[:MAX_SIG_LEN_PER_CLASS]
             
     sig = (sig1, sig2)
     moment_end = time_ns()
@@ -187,19 +204,48 @@ def measure_class_distance(truth_class, test_path, test_sig, classes, training_c
         # a2 = set(ds2[0])
         # b2 = set(ds2[1])
         # similarity_score = len(a1.intersection(a2)) / len(a1.union(a2)) + len(b1.intersection(b2)) / len(b1.union(b2))
+        
+        
+        # similarity_score = 0
+        # for ii in range(2):
+        #     points = 0
+        #     points_all = 0
+        #     for kmer in doc1[ii]:
+        #         if kmer in doc2[ii]:
+        #             points += 1 + math.log(min(doc1[ii][kmer], doc2[ii][kmer]))
+        #             points_all += 1 + math.log(max(doc1[ii][kmer], doc2[ii][kmer]))
+        #         else:
+        #             points_all += 1 + math.log(doc1[ii][kmer])
+        #     for kmer in doc2[ii]:
+        #         if kmer not in doc1[ii]:
+        #             points_all += 1 + math.log(doc2[ii][kmer])
+        #     similarity_score += points / points_all
+        # scores.append(similarity_score)
+
         similarity_score = 0
         for ii in range(2):
             points = 0
             points_all = 0
-            for kmer in doc1[ii]:
-                if kmer in doc2[ii]:
-                    points += 1 + math.log(min(doc1[ii][kmer], doc2[ii][kmer]))
-                    points_all += 1 + math.log(max(doc1[ii][kmer], doc2[ii][kmer]))
+            
+            occ1 = 0
+            occ2 = 0
+            last_kmer = 0
+            for (kmer, occ) in sorted(doc1[ii] + doc2[ii]):
+                if kmer != last_kmer:
+                    if occ1 > 0 and occ2 > 0:
+                        points += 1 + math.log(min(occ1, occ2))
+                    elif occ1 > 0:
+                        points_all += 1 + math.log(occ1)
+                    elif occ2 > 0:
+                        points_all += 1 + math.log(occ2)
+                    occ1 = 0
+                    occ2 = 0
                 else:
-                    points_all += 1 + math.log(doc1[ii][kmer])
-            for kmer in doc2[ii]:
-                if kmer not in doc1[ii]:
-                    points_all += 1 + math.log(doc2[ii][kmer])
+                    if occ < 0:
+                        occ2 += -occ
+                    else:
+                        occ1 += occ
+
             similarity_score += points / points_all
         scores.append(similarity_score)
 
@@ -208,9 +254,14 @@ def measure_class_distance(truth_class, test_path, test_sig, classes, training_c
     print(f"--> Classified {test_path} of {truth_class} as {top_classes}")
     return scores
 
+from pympler.asizeof import asizeof
+def _size_mb(data):
+    size_mb = (asizeof(data) // 1000 // 10) / 100
+    return size_mb
+
 def load_data_class_mp(class_name, datasets_paths, is_test):
     (speed, sig) = load_data_class(class_name, datasets_paths, is_test)
-    return (class_name, speed, sig)
+    return (class_name, speed, sig, _size_mb(sig))
 
 # Entrypoint to the aligner
 def run_classifier_pipeline(
@@ -249,8 +300,16 @@ def run_classifier_pipeline(
     # Multiprocessing
     # Setup a list of processes that we want to run
     results = pool.starmap(load_data_class_mp, [(cls, training_datasets[cls], False) for cls in classes])
-    training_classes = { cls: cls_sig for (cls, _, cls_sig) in results }
+    training_classes = { cls: cls_sig for (cls, _, cls_sig, _) in results }
     l_1m_speeds += [speed_1m for (_, speed_1m, _) in results]
+
+    print(f"Signature size per class:")
+    for (cls, _, _, size_mb) in results:
+        print(f" ==> Class {cls} stores {size_mb} MB")
+    print("==============================")
+    print(f"TOTAL MEM ALLOCATED FOR SIGNATURES: {_size_mb(training_classes)} MB")
+    print("==============================")
+
     #training_classes = { cls: load_data_class(cls, training_datasets[cls]) for cls in classes }
 
     # Test
