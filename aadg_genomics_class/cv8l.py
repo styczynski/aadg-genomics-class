@@ -8,8 +8,6 @@ from gc import collect as gc_collect, disable as gc_disable
 from sys import maxsize, argv as sys_argv, exit
 from functools import partial
 import gzip
-import multiprocessing as mp
-import pickle
 
 from time import time_ns
 from itertools import chain
@@ -21,7 +19,7 @@ import math
 import numpy as np
 import mmh3
 
-from numpy import sort, frompyfunc, vectorize, uint8, uint32, array, concatenate, add, argmin, arange, column_stack, unique, split, empty, ix_, take, diff
+from numpy import sort, frompyfunc, vectorize, uint8, int64, uint32, array, concatenate, add, argmin, arange, column_stack, unique, split, empty, ix_, take, diff
 from bisect import bisect_right
 
 # Used to create kmer binary masks
@@ -103,9 +101,10 @@ def dist_dataset(ds1, ds2):
 
 _total_loaded_reads = 0
 
-OCC_MASK = 31
-OCC_MASK_LEN = 5
-KMER_MASK = 8796093022176
+OCC_MASK = 262143
+OCC_MASK_LEN = 18
+KMER_MASK = 72057594037665792
+SIGNO_MASK = (1 << 62)
 
 def load_data_class(class_name, datasets_paths, is_test):
     
@@ -116,18 +115,18 @@ def load_data_class(class_name, datasets_paths, is_test):
 
     MAX_SIG_LEN_PER_CLASS = 3000000
     MAX_KMER_VALUE = 1000000000
-    sig_per_step = round(MAX_SIG_LEN_PER_CLASS / total_est_chunks * 2.5)
+    sig_per_step = 50000 * (2 if is_test else 1) #round(MAX_SIG_LEN_PER_CLASS / total_est_chunks * 0.82)
+    print(f"sig per step is {sig_per_step}")
 
-    #SIG_LEN = 50000 * (2 if is_test else 1)
+    SIG_LEN = 50000 * (2 if is_test else 1)
     seq_buffer = ""
     loaded_reads = 0
     total_reads = 0
-    sig1 = []
-    sig2 = []
+    sig = np.array([], dtype=int64)
     
     for fasta_file_gz in datasets_paths:
-        part_sig1 = []
-        part_sig2 = []
+        part_sig1 = dict()
+        part_sig2 = dict()
 
         for line in chain(gzip.open(fasta_file_gz, 'rt'), [">"]):
             if line[0] != '>':
@@ -142,7 +141,7 @@ def load_data_class(class_name, datasets_paths, is_test):
                 loaded_reads += 1
             elif loaded_reads > reads_per_chunk or len(line) == 1:
                 if not is_test:
-                    print(f"class={class_name}: Load dataset chunk {fasta_file_gz}")
+                    print(f"class={class_name}: Load dataset chunk {fasta_file_gz}: {total_reads // 30000}%")
                 #seq_buffer_b = b''.join((mmh3.mmh3_x64_128_digest(seq_buffer[i:i+DATASET_READ_MAX_SIZE]) for i in range(0, len(seq_buffer), DATASET_READ_MAX_SIZE)))
                 #seq_arr = np.frombuffer(seq_buffer_b, dtype=np.uint32)
 
@@ -162,17 +161,13 @@ def load_data_class(class_name, datasets_paths, is_test):
                 # kmers = sort(kmers)
 
                 #kappa = kmers[kmers < MAX_KMER_VALUE]
-                kappa = kmers
-                kappa = np.column_stack(np.unique(kappa, return_counts=True))     
-                kappa = kappa[kappa[:,0].argsort()]    
-                
-                # Compress
-                if is_test:
-                    part_sig1 += [(((kmer << OCC_MASK_LEN) | (occ & OCC_MASK)) << 1) | 1 for [kmer, occ] in kappa[:sig_per_step].tolist()]
-                    part_sig2 += [(((kmer << OCC_MASK_LEN) | (occ & OCC_MASK)) << 1) | 1 for [kmer, occ] in kappa[-sig_per_step:].tolist()]
-                else:
-                    part_sig1 += [(((kmer << OCC_MASK_LEN) | (occ & OCC_MASK)) << 1) for [kmer, occ] in kappa[:sig_per_step].tolist()]
-                    part_sig2 += [(((kmer << OCC_MASK_LEN) | (occ & OCC_MASK)) << 1) for [kmer, occ] in kappa[-sig_per_step:].tolist()]
+                kappa = np.column_stack(np.unique(kmers, return_counts=True))      
+                kappa = kappa[kappa[:,0].argsort()]      
+
+                for (kmer, occ_count) in kappa[:sig_per_step].tolist():
+                    part_sig1[kmer] = part_sig1.get(kmer, 0) + occ_count
+                for (kmer, occ_count) in kappa[-sig_per_step:].tolist():
+                    part_sig2[kmer] = part_sig2.get(kmer, 0) + occ_count
 
                 #part_sig1 += list(map(tuple, kappa[:sig_per_step].tolist()))
                 #part_sig2 += list(map(tuple, kappa[-sig_per_step:].tolist()))
@@ -186,16 +181,44 @@ def load_data_class(class_name, datasets_paths, is_test):
                 loaded_reads = 0
                 #del seq_arr
         
-        sig1 = sorted(sig1+part_sig1)[:MAX_SIG_LEN_PER_CLASS]
-        sig2 = sorted(sig2+part_sig2)[:MAX_SIG_LEN_PER_CLASS]
-            
-    sig = (np.array(sig1), np.array(sig2))
+        #sig1 = sorted(sig1+part_sig1)[:MAX_SIG_LEN_PER_CLASS]
+        #sig2 = sorted(sig2+part_sig2)[:MAX_SIG_LEN_PER_CLASS]
+
+        if is_test:
+            sig = np.concatenate((
+                sig,
+                np.array([((((kmer << OCC_MASK_LEN) | (occ & OCC_MASK)) << 1) | 1 ) for (kmer, occ) in part_sig1.items()], dtype=int64),
+                np.array([((((kmer << OCC_MASK_LEN) | (occ & OCC_MASK)) << 1) | 1 | SIGNO_MASK ) for (kmer, occ) in part_sig2.items()], dtype=int64)
+            ), dtype=int64)
+            #sig1x = np.array([((((kmer << OCC_MASK_LEN) | (occ & OCC_MASK)) << 1) | 1 ) for (kmer, occ) in part_sig1.items()])
+            #sig2x = np.array([((((kmer << OCC_MASK_LEN) | (occ & OCC_MASK)) << 1) | 1 | SIGNO_MASK ) for (kmer, occ) in part_sig2.items()])
+        else:
+            sig = np.concatenate((
+                sig,
+                np.array([((((kmer << OCC_MASK_LEN) | (occ & OCC_MASK)) << 1) ) for (kmer, occ) in part_sig1.items()], dtype=int64),
+                np.array([((((kmer << OCC_MASK_LEN) | (occ & OCC_MASK)) << 1) | SIGNO_MASK ) for (kmer, occ) in part_sig2.items()], dtype=int64)
+            ), dtype=int64)
+            # sig1x = np.array([((((kmer << OCC_MASK_LEN) | (occ & OCC_MASK)) << 1)) for (kmer, occ) in part_sig1.items()])
+            # sig2x = np.array([((((kmer << OCC_MASK_LEN) | (occ & OCC_MASK)) << 1) | SIGNO_MASK) for (kmer, occ) in part_sig2.items()])
+        del part_sig1
+        del part_sig2
+        gc_collect()
+        gc_collect()
+
+    #sig = (np.array(sig1), np.array(sig2))
+    # Compress and process
     moment_end = time_ns()
+
+    #del sig1x
+    #del sig2x 
+    #del sig1 
+    #del sig2
 
     #print(f"Train: Total sig length for cls={class_name} is {sum((len(s) for s in sig))}")
     if not is_test:
-        print(f"Train: Total sig length for cls={class_name} is {len(sig1)+len(sig2)}")
+        print(f"Train: Total sig length for cls={class_name} is {len(sig)}")
     speed_1m_sec = (((moment_end-moment_start) * (1000000 / total_reads)) // 10000000) / 100
+    gc_collect()
     return (speed_1m_sec, sig)
 
 def measure_class_distance(truth_class, test_path, test_sig, classes, training_classes):
@@ -235,48 +258,88 @@ def measure_class_distance(truth_class, test_path, test_sig, classes, training_c
         # scores.append(similarity_score)
 
         similarity_score = 0
-        for ii in range(2):
-            points = 0
-            points_all = 0
-            
-            occ1 = 0
-            occ2 = 0
-            last_kmer = 0
-            combine = np.sort(np.concatenate((doc1[ii],doc2[ii])))
-            for v in combine.tolist():
-                # ((tupx & kmermask) >> occmask_len, (tupx & occmask))
-                is_test = (v & 1)
-                v = v >> 1
-                kmer = (v & KMER_MASK) >> OCC_MASK_LEN
-                occ = v & OCC_MASK
-                if kmer != last_kmer:
-                    #print(f"{kmer} -> {occ1} {occ2}")
-                    if occ1 > 0 and occ2 > 0:
-                        points += 1 + math.log(min(occ1, occ2))
-                        points_all += 1 + math.log(max(occ1, occ2))
-                    elif occ1 > 0:
-                        points_all += 1 + math.log(occ1)
-                    elif occ2 > 0:
-                        points_all += 1 + math.log(occ2)
-                    occ1 = 0
-                    occ2 = 0
-                    if is_test:
-                        occ2 += occ
-                    else:
-                        occ1 += occ
-                    last_kmer = kmer
-                else:
-                    if is_test:
-                        occ2 += occ
-                    else:
-                        occ1 += occ
 
-            similarity_score += points / points_all
+        points = 0
+        points_all = 0
+        
+        occ1 = 0
+        occ2 = 0
+        last_kmer = 0
+        last_signo = False
+        bangla = 0
+        # print(f"TT := {doc1.dtype} x {doc2.dtype}")
+        # print(f"TT := {len(doc1)} x {len(doc2)}")
+        # print(np.array([SIGNO_MASK], dtype=int64))
+        # print(np.array([SIGNO_MASK], dtype=int64)[0] == SIGNO_MASK)
+        combine = np.sort(np.concatenate((doc1,doc2), dtype=int64))
+        last_i = len(combine)-1
+        # f1 = len(combine[combine & SIGNO_MASK == 0])
+        # f2 = len(combine[combine & SIGNO_MASK != 0])
+        # print(f"flag=0 -> {f1} | flag=1 -> {f2}")
+        #print(f"SANITY MEGACHECK => {combine[len(combine)-1] == SIGNO_MASK}")
+        #print(f"Combine_size = {len(combine)}")
+        i = 0
+        for v in combine.tolist():
+            # ((tupx & kmermask) >> occmask_len, (tupx & occmask))
+            is_test = (v & 1)
+            signo = (v & SIGNO_MASK) != 0
+            vs = v >> 1
+            kmer = (vs & KMER_MASK) >> OCC_MASK_LEN
+            occ = vs & OCC_MASK
+            bangla += 1
+            # print(i)
+            if signo != last_signo or i == last_i:
+                #print(f"UGABUGA!!!! {points} / {points_all} | {signo} <- {last_signo} | {bangla} <{v == SIGNO_MASK}> <{i}>")
+                bangla = 0
+                similarity_score += points / points_all 
+                points = 0
+                points_all = 0
+                if occ1 > 0 and occ2 > 0:
+                    points += 1 + math.log(min(occ1, occ2))
+                    points_all += 1 + math.log(max(occ1, occ2))
+                elif occ1 > 0:
+                    points_all += 1 + math.log(occ1)
+                elif occ2 > 0:
+                    points_all += 1 + math.log(occ2)
+                occ1 = 0
+                occ2 = 0
+                if is_test:
+                    occ2 += occ
+                else:
+                    occ1 += occ
+            elif kmer != last_kmer:
+                #print(f"{kmer} -> {occ1} {occ2}")
+                if occ1 > 0 and occ2 > 0:
+                    points += 1 + math.log(min(occ1, occ2))
+                    points_all += 1 + math.log(max(occ1, occ2))
+                elif occ1 > 0:
+                    points_all += 1 + math.log(occ1)
+                elif occ2 > 0:
+                    points_all += 1 + math.log(occ2)
+                occ1 = 0
+                occ2 = 0
+                if is_test:
+                    occ2 += occ
+                else:
+                    occ1 += occ
+            else:
+                if is_test:
+                    occ2 += occ
+                else:
+                    occ1 += occ
+            last_kmer = kmer
+            last_signo = signo
+            i += 1
         scores.append(similarity_score)
 
-
+    del combine
+    gc_collect()
     top_classes = [cls for (_, cls) in sorted([(scores[i], classes[i]) for i in range(len(classes))], reverse=True)]
     print(f"--> Classified {test_path} of {truth_class} as {top_classes}")
+    #print([classes[i] for i in range(len(classes))])
+    #print([scores[i] for i in range(len(classes))])
+    #import sys
+    #sys.exit(1)
     return scores
 
 from pympler.asizeof import asizeof
@@ -296,7 +359,13 @@ def run_classifier_pipeline(
     ground_truth_file: str,
     test_dump_file: str,
 ):
-    preload_train = True
+    import pickle
+    with open(test_dump_file, 'rb') as dump_file:
+        training_classes = pickle.load(dump_file)
+
+    preload_train = False
+    super_debug = False
+    dump_file = False
 
     # Thisable garbage collection, this should make memory usages a little bit better
     gc_disable()
@@ -321,39 +390,52 @@ def run_classifier_pipeline(
             for tokens in k:
                 training_datasets[tokens[1]].append(tokens[0])
     classes = list(sorted(training_datasets.keys()))
-    
-    pool = mp.Pool(processes=12)
 
     # Train
     # Multiprocessing
     # Setup a list of processes that we want to run
     if preload_train:
+        import pickle
         with open(test_dump_file, 'rb') as dump_file:
             training_classes = pickle.load(dump_file)
         print(f"Loaded pretrain data")
         print("==============================")
     else:
-        results = pool.starmap(load_data_class_mp, [(cls, training_datasets[cls], False) for cls in classes])
-        training_classes = { cls: cls_sig for (cls, _, cls_sig, _) in results }
-        l_1m_speeds += [speed_1m for (_, speed_1m, _, _) in results]
+        if super_debug:
+            import multiprocessing as mp
+            pool = mp.Pool(processes=12)
+            results = pool.starmap(load_data_class_mp, [(cls, training_datasets[cls], False) for cls in classes])
+            training_classes = { cls: cls_sig for (cls, _, cls_sig, _) in results }
+            l_1m_speeds += [speed_1m for (_, speed_1m, _, _) in results]
 
-        print(f"Signature size per class:")
-        for (cls, _, _, size_mb) in results:
-            print(f" ==> Class {cls} stores {size_mb} MB")
-        print("==============================")
-
-        with open(test_dump_file, 'wb') as dump_file:
-            pickle.dump(training_classes, dump_file)
-            print(f"Dumped train data to {test_dump_file}")
+            print(f"Signature size per class:")
+            for (cls, _, _, size_mb) in results:
+                print(f" ==> Class {cls} stores {size_mb} MB")
+            print("==============================")
+        else:
+            #training_classes = dict()
+            for cls in classes:
+                (speed_1m, sig) = load_data_class(cls, training_datasets[cls], False)
+                training_classes[cls] = sig
+                l_1m_speeds.append(speed_1m)
+                break
+        if dump_file:
+            import pickle
+            with open(test_dump_file, 'wb') as dump_file:
+                pickle.dump(training_classes, dump_file)
+                print(f"Dumped train data to {test_dump_file}")
 
     #print(f"TOTAL MEM ALLOCATED FOR SIGNATURES: {_size_mb(training_classes)} MB")
     #print("==============================")
 
     #training_classes = { cls: load_data_class(cls, training_datasets[cls]) for cls in classes }
 
+    #return 0
+
     # Test
     output_buf = ["\t".join(["fasta_file", *classes])+"\n"]
     p_args = []
+    ccc = 1
     with open(testing_file_path) as testing_file:
             k = (line.strip() for line in testing_file)
             next(k)
@@ -364,6 +446,10 @@ def run_classifier_pipeline(
                 print(output_line)
                 output_buf.append(output_line)
                 l_1m_speeds.append(speed_1m)
+                ccc += 1
+                if ccc > 10:
+                    print(f"!!!!! Early exit {ccc}")
+                    return 0
     # results = [pool.apply(load_data_class_mp, args=args) for args in p_args]
     # results_d = { key: value for (key, _, value) in results}
     # with open(testing_file_path) as testing_file:
@@ -384,7 +470,7 @@ def run_classifier_pipeline(
     speed_1m_sec = sum(l_1m_speeds) / len(l_1m_speeds)
     print(f"Avg. speed per 1M reads: {speed_1m_sec} sec. ({(speed_1m_sec // 6)/10} min.) / max. 120 sec.")
 
-    if __debug__:
+    if super_debug:
         import pandas as pd
         from sklearn.metrics import roc_auc_score
         output = pd.read_csv(output_file_path, sep='\t')
